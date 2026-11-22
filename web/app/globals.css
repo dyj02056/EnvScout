@@ -1,0 +1,72 @@
+/* 측량 야장 느낌: 회녹색 도면지, 가는 선, 카드 없음 */
+:root {
+  --paper: #e6ebe8;
+  --paper-2: #dbe2de;
+  --ink: #1a2a33;
+  --ink-soft: #4a5b63;
+  --line: #b8c3bd;
+  --teal: #1d6b73;
+  --amber: #8a5d00; /* 본문 위 대비 4.5:1 이상으로 어둡게 */
+  --brick: #a3382a;
+  --sans: "Pretendard Variable", Pretendard, system-ui, sans-serif;
+  --code: D2Coding, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--paper); color: var(--ink); font: 16px/1.65 var(--sans); }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+
+.app { display: grid; grid-template-columns: minmax(0, 1fr) 380px; height: 100dvh; }
+.chat { display: flex; flex-direction: column; min-height: 0; padding: 28px 40px 24px; }
+.brand { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4px; }
+.sub { margin: 0 0 20px; color: var(--ink-soft); font-size: 0.9rem; max-width: 60ch; }
+
+.log { flex: 1; overflow-y: auto; max-width: 68ch; padding-right: 8px; }
+.q { font-weight: 600; margin: 22px 0 6px; }
+.a { margin: 0 0 6px; white-space: pre-wrap; }
+.err { color: var(--brick); margin: 6px 0; }
+.empty { color: var(--ink-soft); }
+.empty ul { margin: 8px 0 0; padding-left: 1.1em; }
+.empty button { background: none; border: 0; padding: 2px 0; color: var(--teal); text-decoration: underline; cursor: pointer; text-align: left; }
+
+form { display: flex; gap: 12px; max-width: 68ch; border-top: 1px solid var(--line); padding-top: 14px; }
+input { flex: 1; background: transparent; border: 0; border-bottom: 1.5px solid var(--ink); padding: 8px 2px; border-radius: 0; }
+input::placeholder { color: var(--ink-soft); }
+form button { background: var(--ink); color: var(--paper); border: 0; padding: 8px 18px; border-radius: 2px; cursor: pointer; }
+form button:disabled { opacity: 0.45; cursor: default; }
+
+.sheet { background: var(--paper-2); border-left: 1px solid var(--line); overflow-y: auto; padding: 28px 24px; }
+.sheet h2 { font-size: 0.95rem; margin: 0 0 12px; }
+.sheet section + section { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--line); }
+.note { color: var(--ink-soft); font-size: 0.88rem; margin: 0; }
+
+/* 호출 궤적: 순서가 있는 정보라서 세로선과 번호를 쓴다 */
+.trail { list-style: none; margin: 0; padding: 0 0 0 18px; border-left: 2px solid var(--ink); }
+.trail li { position: relative; padding: 0 0 14px 14px; }
+.trail li::before { content: ""; position: absolute; left: -24px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--teal); border: 2px solid var(--paper-2); }
+.trail li.run::before { background: var(--paper-2); border-color: var(--teal); animation: step 0.5s ease-out; }
+.trail li.fail::before { background: var(--brick); }
+.trail .t { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+.trail .ms { font-weight: 400; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.trail code, pre { font-family: var(--code); font-size: 0.8rem; }
+.trail pre { margin: 4px 0 0; max-height: 7.5em; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--ink-soft); }
+@keyframes step { from { transform: scale(0.4); } to { transform: scale(1); } }
+
+.res { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.res strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+svg.spark { width: 140px; height: 36px; overflow: visible; }
+svg.spark polyline { fill: none; stroke: var(--teal); stroke-width: 1.8; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-weight: 600; padding: 4px 0; border-bottom: 1px solid var(--ink); }
+td { padding: 4px 0; border-bottom: 1px solid var(--line); }
+td.n, th.n { text-align: right; }
+.bad { color: var(--brick); font-weight: 600; }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; height: auto; }
+  .chat { height: 80dvh; padding: 20px 16px; }
+  .sheet { border-left: 0; border-top: 1px solid var(--line); padding: 20px 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .trail li.run::before { animation: none; } }
