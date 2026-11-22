@@ -1,0 +1,13 @@
+{
+  "name": "envscout",
+  "private": true,
+  "workspaces": ["shared", "mcp-server", "web"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "postinstall": "npm run build -w @envscout/shared",
+    "build": "npm run build -w @envscout/shared -w envscout-mcp -w web",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test --workspaces",
+    "lint": "npm run lint -w web"
+  }
+}

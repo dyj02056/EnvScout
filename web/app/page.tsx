@@ -1,11 +1,13 @@
 "use client";
 // 메인 화면: 왼쪽은 대화, 오른쪽은 조사 기록(호출 궤적·리소스·사용량)
 import { useEffect, useRef, useState } from "react";
-import type { Ev } from "@/lib/agent";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Ev, HistoryTurn } from "@/lib/agent";
+import type { Usage } from "@/lib/audit";
 
 type Step = { id: string; tool: string; args: unknown; state: "run" | "ok" | "fail"; ms?: number; text?: string };
-type Turn = { q: string; a: string; err?: string };
-type Usage = { tools: { tool: string; calls: number; fails: number; avgMs: number }[]; tokensIn: number; tokensOut: number };
+type Turn = { q: string; a: string; err?: string; stopped?: boolean; steps: Step[] };
 
 const SAMPLES = [
   "커밋 안 한 변경이 있는 저장소가 있어?",
@@ -13,25 +15,49 @@ const SAMPLES = [
   "3000번 포트가 열려 있어?",
   "오래된 의존성이 있는지 확인해줘",
 ];
+const HISTORY_TURNS = 5;
+const HISTORY_CHARS = 7000; // 서버 제한(8000자)보다 조금 작게
+
+/** 이어지는 질문에 넘길 이전 대화. 답을 받은 턴만, 최근 것부터 길이 제한 안에서 고른다. */
+function buildHistory(turns: Turn[]): HistoryTurn[] {
+  const out: HistoryTurn[] = [];
+  let chars = 0;
+  for (let i = turns.length - 1; i >= 0 && out.length < HISTORY_TURNS; i--) {
+    const t = turns[i];
+    if (!t.a || t.err) continue;
+    const a = t.a.slice(0, 1500);
+    if (chars + t.q.length + a.length > HISTORY_CHARS) break;
+    chars += t.q.length + a.length;
+    out.unshift({ q: t.q, a });
+  }
+  return out;
+}
 
 export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [steps, setSteps] = useState<Step[]>([]);
+  const [selected, setSelected] = useState<number | null>(null); // 궤적을 볼 턴(null이면 마지막)
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [mem, setMem] = useState<number[]>([]);
   const [stat, setStat] = useState({ up: true, count: 0, memMB: 0 });
   const [usage, setUsage] = useState<Usage | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  // 컨테이너 리소스는 3초마다 갱신. 탭이 숨겨지면 요청하지 않는다.
+  // 컨테이너 리소스는 3초마다 갱신. 탭이 숨겨졌거나 이전 요청이 아직 안 끝났으면 건너뛴다.
   useEffect(() => {
+    let inFlight = false;
     const tick = async () => {
-      if (document.hidden) return;
-      const s = await fetch("/api/stats").then((r) => r.json()).catch(() => null);
-      if (!s) return;
-      setStat(s);
-      setMem((m) => [...m.slice(-29), s.memMB]);
+      if (document.hidden || inFlight) return;
+      inFlight = true;
+      try {
+        const s = await fetch("/api/stats").then((r) => r.json()).catch(() => null);
+        if (!s) return;
+        setStat(s);
+        setMem((m) => [...m.slice(-29), s.memMB]);
+      } finally {
+        inFlight = false;
+      }
     };
     tick();
     const id = setInterval(tick, 3000);
@@ -44,11 +70,19 @@ export default function Home() {
 
   async function ask(question: string) {
     if (!question.trim() || busy) return;
-    setBusy(true); setInput(""); setSteps([]);
-    setTurns((t) => [...t, { q: question, a: "" }]);
-    const patch = (p: Partial<Turn>) => setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, ...p } : x)));
+    const history = buildHistory(turns);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setBusy(true); setInput(""); setSelected(null);
+    setTurns((t) => [...t, { q: question, a: "", steps: [] }]);
+    const patch = (f: (x: Turn) => Turn) => setTurns((t) => t.map((x, i) => (i === t.length - 1 ? f(x) : x)));
     try {
-      const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, history }),
+        signal: ctrl.signal,
+      });
       if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error ?? "서버에 연결하지 못했습니다.");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -60,22 +94,29 @@ export default function Home() {
         const parts = buf.split("\n\n");
         buf = parts.pop() ?? "";
         for (const p of parts) {
-          const e = JSON.parse(p.replace(/^data: /, "")) as Ev;
-          if (e.type === "tool_start") setSteps((s) => [...s, { id: e.id, tool: e.tool, args: e.args, state: "run" }]);
-          else if (e.type === "tool_end") setSteps((s) => s.map((x) => (x.id === e.id ? { ...x, state: e.ok ? "ok" : "fail", ms: e.ms, text: e.text } : x)));
-          else if (e.type === "text") patch({ a: e.text });
-          else if (e.type === "error") patch({ err: e.message });
+          if (!p.startsWith("data: ")) continue;
+          const e = JSON.parse(p.slice(6)) as Ev;
+          if (e.type === "tool_start") patch((x) => ({ ...x, steps: [...x.steps, { id: e.id, tool: e.tool, args: e.args, state: "run" }] }));
+          else if (e.type === "tool_end") patch((x) => ({ ...x, steps: x.steps.map((s) => (s.id === e.id ? { ...s, state: e.ok ? "ok" : "fail", ms: e.ms, text: e.text } : s)) }));
+          else if (e.type === "text") patch((x) => ({ ...x, a: e.text }));
+          else if (e.type === "error") patch((x) => ({ ...x, err: e.message }));
           else if (e.type === "done") sawDone = true;
         }
       }
-      if (!sawDone) patch({ err: "응답이 중간에 끊겼습니다. 다시 시도하세요." });
+      if (!sawDone) patch((x) => ({ ...x, err: "응답이 중간에 끊겼습니다. 다시 시도하세요." }));
     } catch (e) {
-      patch({ err: (e as Error).message });
+      if (ctrl.signal.aborted) patch((x) => ({ ...x, stopped: true }));
+      else patch((x) => ({ ...x, err: (e as Error).message }));
     } finally {
+      abortRef.current = null;
       setBusy(false);
       loadUsage();
     }
   }
+
+  const shownIdx = selected ?? turns.length - 1;
+  const shown = turns[shownIdx];
+  const steps = shown?.steps ?? [];
 
   const max = Math.max(1, ...mem);
   const points = mem.map((v, i) => `${(i / Math.max(1, mem.length - 1)) * 140},${36 - (v / max) * 34}`).join(" ");
@@ -93,24 +134,30 @@ export default function Home() {
             </div>
           )}
           {turns.map((t, i) => (
-            <div key={i}>
+            <div key={i} className={i === shownIdx && turns.length > 1 ? "turn shown" : "turn"}>
               <p className="q">{t.q}</p>
-              {t.a && <p className="a">{t.a}</p>}
+              {t.a && <div className="a"><ReactMarkdown remarkPlugins={[remarkGfm]}>{t.a}</ReactMarkdown></div>}
               {t.err && <p className="err" role="alert">{t.err}</p>}
-              {!t.a && !t.err && i === turns.length - 1 && busy && <p className="note">점검 중…</p>}
+              {t.stopped && <p className="note">중지했습니다.</p>}
+              {!t.a && !t.err && !t.stopped && i === turns.length - 1 && busy && <p className="note">점검 중…</p>}
+              {t.steps.length > 0 && i !== shownIdx && (
+                <button type="button" className="link" onClick={() => setSelected(i)}>호출 궤적 보기 ({t.steps.length})</button>
+              )}
             </div>
           ))}
           <div ref={logEnd} />
         </div>
         <form onSubmit={(e) => { e.preventDefault(); ask(input); }}>
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="무엇을 점검할까요?" aria-label="질문" maxLength={2000} />
-          <button disabled={busy || !input.trim()}>보내기</button>
+          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder={turns.length ? "이어서 물어보세요" : "무엇을 점검할까요?"} aria-label="질문" maxLength={2000} />
+          {busy
+            ? <button type="button" className="stop" onClick={() => abortRef.current?.abort()}>중지</button>
+            : <button disabled={!input.trim()}>보내기</button>}
         </form>
       </section>
 
       <aside className="sheet" aria-label="조사 기록">
         <section>
-          <h2>호출 궤적</h2>
+          <h2>호출 궤적{shown && turns.length > 1 ? <span className="note"> · {shownIdx + 1}번째 질문</span> : null}</h2>
           {steps.length === 0 ? <p className="note">질문하면 에이전트가 부른 도구가 여기에 순서대로 쌓입니다.</p> : (
             <ol className="trail">
               {steps.map((s) => (
@@ -129,13 +176,13 @@ export default function Home() {
           {stat.up ? (
             <div className="res">
               <div><strong>{stat.count}</strong>개 실행 중<br /><span className="note">메모리 {stat.memMB}MB</span></div>
-              <svg className="spark" viewBox="0 0 140 36" role="img" aria-label="메모리 추이"><polyline points={points} /></svg>
+              {mem.length > 1 && <svg className="spark" viewBox="0 0 140 36" role="img" aria-label="메모리 추이"><polyline points={points} /></svg>}
             </div>
           ) : <p className="note">Docker 엔진이 꺼져 있습니다. Docker Desktop을 실행하면 표시됩니다.</p>}
         </section>
 
         <section>
-          <h2>도구 사용량</h2>
+          <h2>도구 사용량 <span className="note">· 최근 {usage?.windowHours ?? 24}시간</span></h2>
           {!usage || usage.tools.length === 0 ? <p className="note">아직 호출 기록이 없습니다.</p> : (
             <>
               <table>

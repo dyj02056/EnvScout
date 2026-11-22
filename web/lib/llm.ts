@@ -14,11 +14,8 @@ const GROQ_MODELS = {
   smart: process.env.GROQ_MODEL_SMART ?? "llama-3.3-70b-versatile",
 };
 
-export async function chat(model: "fast" | "smart", system: string, messages: Msg[], tools: ToolDef[]): Promise<Turn> {
-  const local = process.env.LLM === "ollama";
-  const url = local ? `${process.env.OLLAMA_URL ?? "http://127.0.0.1:11434"}/v1/chat/completions` : "https://api.groq.com/openai/v1/chat/completions";
-  if (!local && !process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY가 설정되지 않았습니다. web/.env.local에 키를 넣고 서버를 다시 시작하세요.");
-
+/** messages를 OpenAI 호환 형식으로 바꾼다. 테스트를 위해 분리했다. */
+export function toOpenAI(system: string, messages: Msg[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [{ role: "system", content: system }];
   for (const m of messages) {
     if (typeof m.content === "string") { out.push({ role: m.role, content: m.content }); continue; }
@@ -26,12 +23,26 @@ export async function chat(model: "fast" | "smart", system: string, messages: Ms
     const calls = m.content.filter((b): b is Extract<Block, { type: "tool_use" }> => b.type === "tool_use");
     if (calls.length) {
       out.push({ role: "assistant", content: text || null, tool_calls: calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.input) } })) });
+    } else if (text) {
+      out.push({ role: m.role, content: text });
     }
     for (const b of m.content) if (b.type === "tool_result") out.push({ role: "tool", tool_call_id: b.tool_use_id, content: b.content });
   }
+  return out;
+}
 
+export async function chat(model: "fast" | "smart", system: string, messages: Msg[], tools: ToolDef[], signal?: AbortSignal): Promise<Turn> {
+  const local = process.env.LLM === "ollama";
+  const url = local ? `${process.env.OLLAMA_URL ?? "http://127.0.0.1:11434"}/v1/chat/completions` : "https://api.groq.com/openai/v1/chat/completions";
+  if (!local && !process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY가 설정되지 않았습니다. web/.env.local에 키를 넣고 서버를 다시 시작하세요.");
+
+  const out = toOpenAI(system, messages);
+
+  // 브라우저가 끊기면(signal) 또는 60초가 지나면 요청을 끊는다
+  const timeout = AbortSignal.timeout(60_000);
   const res = await fetch(url, {
     method: "POST",
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     headers: { "Content-Type": "application/json", ...(local ? {} : { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }) },
     body: JSON.stringify({
       model: local ? (process.env.OLLAMA_MODEL ?? "qwen2.5:7b") : GROQ_MODELS[model],
@@ -45,10 +56,11 @@ export async function chat(model: "fast" | "smart", system: string, messages: Ms
     throw new Error(`${local ? "Ollama" : "Groq"} 응답 오류 ${res.status}. ${hint}`.trim());
   }
   const j = (await res.json()) as {
-    choices: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
+    choices?: { message: { content: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] } }[];
     usage?: { prompt_tokens: number; completion_tokens: number };
   };
-  const msg = j.choices[0].message;
+  const msg = j.choices?.[0]?.message;
+  if (!msg) throw new Error(`${local ? "Ollama" : "Groq"} 응답에 결과가 없습니다.`);
   const blocks: Block[] = [];
   if (msg.content) blocks.push({ type: "text", text: msg.content });
   for (const c of msg.tool_calls ?? []) {

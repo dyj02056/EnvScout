@@ -4,6 +4,26 @@ import { run } from "../safe.js";
 
 const IMAGE = process.env.ENVSCOUT_IMAGE ?? "node:22-alpine";
 const TIMEOUT_MS = 10_000;
+const PULL_TIMEOUT_MS = 120_000;
+
+let imageReady: Promise<void> | null = null;
+
+/** 이미지가 없으면 미리 받아 둔다. pull 시간이 실행 제한(10초)에 포함되지 않게 하려는 것. 한 번만 실행한다. */
+export function ensureImage(): Promise<void> {
+  imageReady ??= (async () => {
+    const has = await run("docker", ["image", "inspect", IMAGE], { timeout: 8000 });
+    if (has.code === 0) return;
+    if (/Cannot connect|error during connect|pipe/i.test(has.stderr)) {
+      throw new Error("Docker 엔진이 꺼져 있습니다. Docker Desktop을 실행한 뒤 다시 시도하세요.");
+    }
+    const pull = await run("docker", ["pull", IMAGE], { timeout: PULL_TIMEOUT_MS });
+    if (pull.code !== 0) throw new Error(`샌드박스 이미지(${IMAGE})를 받지 못했습니다: ${pull.stderr.trim().split("\n").pop()}`);
+  })().catch((e) => {
+    imageReady = null; // 실패하면 다음 호출에서 다시 시도
+    throw e;
+  });
+  return imageReady;
+}
 
 // 코드는 마운트하지 않고 stdin으로 넘긴다. 호스트 파일이 컨테이너에 노출되지 않는다.
 // shortcut: 언어는 node만 지원, python은 이미지와 명령만 추가하면 됨
@@ -21,6 +41,7 @@ export function sandboxArgs(name: string): string[] {
 
 export async function runInSandbox(code: string) {
   if (code.length > 20_000) throw new Error("코드가 너무 깁니다(20KB 제한)");
+  await ensureImage();
   const name = `envscout-${randomUUID().slice(0, 8)}`;
   const started = Date.now();
   // docker CLI에 SIGTERM을 보내면 컨테이너의 PID 1(node)이 무시해서 끝나지 않는다(리눅스).

@@ -2,13 +2,13 @@
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
-import { mask } from "./mask.js";
+import { mask } from "@envscout/shared";
 
 const MAX_OUT = 64 * 1024;
 
-// 허용 루트는 환경변수로만 지정한다. 기본은 서버 실행 위치.
+// 허용 루트는 환경변수로만 지정한다. 기본은 서버 실행 위치. 여러 개는 path.delimiter(Windows ;, 그 외 :)로 구분.
 // shortcut: 루트 변경은 재시작 필요, UI에서 바꾸는 기능은 필요해지면 추가
-function roots(): string[] {
+export function roots(): string[] {
   const raw = process.env.ENVSCOUT_ROOTS ?? process.cwd();
   return raw.split(path.delimiter).filter(Boolean).map((r) => realpathSync(path.resolve(r)));
 }
@@ -38,19 +38,26 @@ export interface RunResult {
 /** 쉘을 거치지 않으므로 args에 ; | 가 들어와도 명령이 이어지지 않는다. 실패(exit != 0)도 결과로 돌려준다. */
 export function run(cmd: string, args: string[], opts: { cwd?: string; timeout?: number; input?: string } = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = execFile(
-      cmd,
-      args,
-      { cwd: opts.cwd, timeout: opts.timeout ?? 5000, maxBuffer: MAX_OUT * 4, windowsHide: true, shell: false },
-      (err, stdout, stderr) => {
-        const e = err as (NodeJS.ErrnoException & { code?: number | string; killed?: boolean }) | null;
-        if (e && (e.code === "ENOENT" || e.killed)) {
-          return reject(new Error(e.killed ? `시간 초과: ${cmd}` : `${cmd} 을(를) 찾을 수 없습니다`));
-        }
-        const code = e ? (typeof e.code === "number" ? e.code : 1) : 0;
-        resolve({ stdout: cap(stdout), stderr: cap(stderr), code });
-      },
-    );
+    let child;
+    try {
+      child = execFile(
+        cmd,
+        args,
+        { cwd: opts.cwd, timeout: opts.timeout ?? 5000, maxBuffer: MAX_OUT * 4, windowsHide: true, shell: false },
+        (err, stdout, stderr) => {
+          const e = err as (NodeJS.ErrnoException & { code?: number | string; killed?: boolean }) | null;
+          if (e && (e.code === "ENOENT" || e.killed)) {
+            return reject(new Error(e.killed ? `시간 초과: ${cmd}` : `${cmd} 을(를) 찾을 수 없습니다`));
+          }
+          const code = e ? (typeof e.code === "number" ? e.code : 1) : 0;
+          resolve({ stdout: cap(stdout), stderr: cap(stderr), code });
+        },
+      );
+    } catch (e) {
+      // Windows에서 .cmd/.bat을 쉘 없이 실행하면 spawn이 EINVAL을 동기적으로 던진다
+      const code = (e as NodeJS.ErrnoException).code;
+      return reject(new Error(`${cmd} 실행 실패${code ? ` (${code})` : ""}: ${(e as Error).message}`));
+    }
     if (opts.input !== undefined) child.stdin?.end(opts.input);
   });
 }

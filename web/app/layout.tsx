@@ -1,5 +1,6 @@
-// 루트 레이아웃: 한글 UI 글꼴(Pretendard)을 불러온다
+// 루트 레이아웃: 한글 UI 글꼴(Pretendard)을 npm 패키지에서 번들해 쓴다. 외부 CDN에 의존하지 않아 오프라인에서도 동작한다.
 import type { Metadata } from "next";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,9 +11,6 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="ko">
-      <head>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-      </head>
       <body>{children}</body>
     </html>
   );
