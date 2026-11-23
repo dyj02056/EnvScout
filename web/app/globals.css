@@ -61,6 +61,8 @@ form button.stop { background: var(--brick); }
 .trail .t { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
 .trail .ms { font-weight: 400; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 .trail code, pre { font-family: var(--code); font-size: 0.8rem; }
+/* 도구 인자(긴 코드·경로)가 패널 밖으로 넘치지 않게 줄바꿈 */
+.trail code { display: block; white-space: pre-wrap; word-break: break-all; }
 .trail pre { margin: 4px 0 0; max-height: 7.5em; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--ink-soft); }
 @keyframes step { from { transform: scale(0.4); } to { transform: scale(1); } }
 
